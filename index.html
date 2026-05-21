@@ -17,6 +17,9 @@
     
     <!-- SheetJS (Para leer Excel) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <!-- Chart.js (Para los gráficos de líneas) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
         /* Pequeñas animaciones personalizadas */
@@ -39,7 +42,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         // ==========================================
         // ICONOS SVG (Reemplazo de Lucide)
@@ -61,56 +64,30 @@
         const RefreshCw = ({className}) => <IconWrapper className={className}><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></IconWrapper>;
         const Calendar = ({className}) => <IconWrapper className={className}><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></IconWrapper>;
         const MessageCircle = ({className}) => <IconWrapper className={className}><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></IconWrapper>;
+        const Flame = ({className}) => <IconWrapper className={className}><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></IconWrapper>;
+        const Star = ({className}) => <IconWrapper className={className}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></IconWrapper>;
+
+        // ==========================================
+        // COMPONENTE: GRÁFICO REUTILIZABLE (Chart.js)
+        // ==========================================
+        const ChartComponent = ({ type, data, options }) => {
+            const canvasRef = useRef(null);
+            const chartRef = useRef(null);
+
+            useEffect(() => {
+                const ctx = canvasRef.current.getContext('2d');
+                Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';
+                if (chartRef.current) chartRef.current.destroy();
+                chartRef.current = new Chart(ctx, { type, data, options });
+                return () => { if (chartRef.current) chartRef.current.destroy(); };
+            }, [data, options, type]);
+
+            return <canvas ref={canvasRef} />;
+        };
 
         // ==========================================
         // UTILERÍAS: PARSER DE CSV Y JSON
         // ==========================================
-        const parseCSV = (text) => {
-          const result = [];
-          let row = [];
-          let inQuotes = false;
-          let val = '';
-          
-          for (let i = 0; i < text.length; i++) {
-            let c = text[i];
-            let next = text[i + 1];
-            
-            if (c === '"' && inQuotes && next === '"') {
-              val += '"';
-              i++;
-            } else if (c === '"') {
-              inQuotes = !inQuotes;
-            } else if (c === ',' && !inQuotes) {
-              row.push(val);
-              val = '';
-            } else if ((c === '\n' || c === '\r') && !inQuotes) {
-              if (c === '\r' && next === '\n') i++; 
-              row.push(val);
-              if (row.some(v => v.trim() !== '')) result.push(row);
-              row = [];
-              val = '';
-            } else {
-              val += c;
-            }
-          }
-          
-          if (val || text[text.length - 1] === ',') row.push(val);
-          if (row.length > 0 && row.some(v => v.trim() !== '')) result.push(row);
-          if (result.length < 2) return [];
-          
-          const headers = result[0].map(h => h.trim());
-          const data = [];
-          
-          for (let i = 1; i < result.length; i++) {
-            let obj = {};
-            for (let j = 0; j < headers.length; j++) {
-              obj[headers[j]] = result[i][j] ? result[i][j].trim() : '';
-            }
-            data.push(obj);
-          }
-          return data;
-        };
-
         const safeJSONParse = (str) => {
           if (!str) return {};
           try { return JSON.parse(str); } catch (e) { return {}; }
@@ -187,20 +164,18 @@
                   const backlogData = getSheetData('backlog') || getSheetData('historico');
 
                   if (!usersData || !configData || !ordersData || !backlogData) {
-                    setError(`El Excel no contiene las 4 hojas necesarias. Hojas encontradas: ${workbook.SheetNames.join(', ')}. Asegúrate de tener: Users, Config, Orders, Backlog.`);
+                    setError(`El Excel no contiene las 4 hojas necesarias. Asegúrate de tener: Users, Config, Orders, Backlog.`);
                     setLoading(false);
                     return;
                   }
 
-                  // 2. Cálculos de KPIs
-                  const totalUsuarios = usersData.length;
+                  // 1. Mapeo de Usuarios
+                  const usersMap = {};
                   const planes = {};
                   const proPagadosIDs = new Set();
                   const proPruebaIDs = new Set();
                   const gratisUsadoIDs = new Set();
                   const gratisNuevoIDs = new Set();
-                  
-                  const usersMap = {};
 
                   usersData.forEach(u => {
                     const plan = (u.Plan || 'Desconocido').trim();
@@ -208,7 +183,14 @@
                     const id = u.UID || u.MerchantID || u.id;
                     const phone = String(u.Phone || u.Telefono || u.whatsapp || '');
 
-                    usersMap[id] = { id, phone, plan, hasUsedTrial, configurado: false, ordenes: 0 };
+                    // Guardamos el mes de creación para que la gráfica del merchant comience aquí
+                    const d = parseSafeDate(u.CreatedAt || u.createdat || u.Fecha);
+                    let createdAtMonth = null;
+                    if (d) {
+                        createdAtMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                    }
+
+                    usersMap[id] = { id, name: '', phone, plan, hasUsedTrial, configurado: false, ordenes: 0, createdAtMonth };
                     planes[plan] = (planes[plan] || 0) + 1;
                     
                     if (plan === 'Pro') {
@@ -224,52 +206,35 @@
                     }
                   });
                   
-                  const configUnicosSet = new Set(configData.map(c => c.MerchantID));
+                  // 2. Mapeo de Configuraciones
+                  const configUnicosSet = new Set();
+                  const merchantNames = {};
+                  
+                  configData.forEach(c => {
+                    configUnicosSet.add(c.MerchantID);
+                    const jsonData = safeJSONParse(c.DataJSON);
+                    const mName = jsonData.merchantName || c.MerchantID;
+                    merchantNames[c.MerchantID] = mName;
+                    
+                    if (usersMap[c.MerchantID]) {
+                        usersMap[c.MerchantID].configurado = true;
+                        usersMap[c.MerchantID].name = mName;
+                    }
+                  });
+                  
+                  const totalUsuarios = usersData.length;
                   const configUnicos = configUnicosSet.size;
                   const tasaAdopcion = totalUsuarios > 0 ? (configUnicos / totalUsuarios) * 100 : 0;
 
-                  let proPagadosConfigurados = 0;
-                  let proPruebaConfigurados = 0;
-                  let gratisUsadoConfigurados = 0;
-                  let gratisNuevoConfigurados = 0;
-                  
-                  configUnicosSet.forEach(id => {
-                      if (usersMap[id]) usersMap[id].configurado = true;
-                      
-                      if (proPagadosIDs.has(id)) proPagadosConfigurados++;
-                      if (proPruebaIDs.has(id)) proPruebaConfigurados++;
-                      if (gratisUsadoIDs.has(id)) gratisUsadoConfigurados++;
-                      if (gratisNuevoIDs.has(id)) gratisNuevoConfigurados++;
-                  });
-                  
-                  const totalProPagados = proPagadosIDs.size;
-                  const adopcionProPagados = totalProPagados > 0 ? (proPagadosConfigurados / totalProPagados) * 100 : 0;
-                  
-                  const totalProPrueba = proPruebaIDs.size;
-                  const adopcionProPrueba = totalProPrueba > 0 ? (proPruebaConfigurados / totalProPrueba) * 100 : 0;
-
-                  const totalGratisUsado = gratisUsadoIDs.size;
-                  const adopcionGratisUsado = totalGratisUsado > 0 ? (gratisUsadoConfigurados / totalGratisUsado) * 100 : 0;
-
-                  const totalGratisNuevo = gratisNuevoIDs.size;
-                  const adopcionGratisNuevo = totalGratisNuevo > 0 ? (gratisNuevoConfigurados / totalGratisNuevo) * 100 : 0;
-
+                  // 3. Mapeo de Órdenes
                   const todasOrdenes = [...ordersData, ...backlogData];
+                  const totalOrdenes = todasOrdenes.length;
                   
-                  const merchantNames = {};
-                  configData.forEach(c => {
-                    const jsonData = safeJSONParse(c.DataJSON);
-                    merchantNames[c.MerchantID] = jsonData.merchantName || c.MerchantID;
-                  });
-
                   let pendientes = 0;
                   let enviadas = 0;
-                  let proPagadosOrdersCount = 0;
-                  let proPruebaOrdersCount = 0;
-                  let gratisUsadoOrdersCount = 0;
-                  let gratisNuevoOrdersCount = 0;
                   const couriersCount = {};
-                  const merchantVentas = {};
+                  const merchantOrdersCount = {}; 
+                  const merchantMonthlyOrders = {}; // Para el gráfico del Top 5
 
                   const ordersByMonth = {};
                   const ordersByDate = {};
@@ -280,12 +245,9 @@
                     if (o.Status === 'PENDIENTE') pendientes++;
                     if (o.Status === 'ENVIADO') enviadas++;
                     
-                    if (usersMap[o.MerchantID]) usersMap[o.MerchantID].ordenes++;
-
-                    if (proPagadosIDs.has(o.MerchantID)) proPagadosOrdersCount++;
-                    if (proPruebaIDs.has(o.MerchantID)) proPruebaOrdersCount++;
-                    if (gratisUsadoIDs.has(o.MerchantID)) gratisUsadoOrdersCount++;
-                    if (gratisNuevoIDs.has(o.MerchantID)) gratisNuevoOrdersCount++;
+                    const mId = o.MerchantID || o.UID;
+                    merchantOrdersCount[mId] = (merchantOrdersCount[mId] || 0) + 1;
+                    if (usersMap[mId]) usersMap[mId].ordenes++;
 
                     const rawDate = o.Date || o.date || o.DATE || o.Fecha || o.fecha || o.FECHA || o.CreatedAt;
                     const dateObj = parseSafeDate(rawDate);
@@ -304,6 +266,10 @@
                       ordersByDate[dateKey] = (ordersByDate[dateKey] || 0) + 1;
                       ordersByDayOfWeek[dayOfWeek]++;
                       ordersByHour[hourOfDay]++;
+
+                      // Tracking mensual por merchant para el chart
+                      if (!merchantMonthlyOrders[mId]) merchantMonthlyOrders[mId] = {};
+                      merchantMonthlyOrders[mId][monthKey] = (merchantMonthlyOrders[mId][monthKey] || 0) + 1;
                     }
 
                     const jsonData = safeJSONParse(o.DataJSON);
@@ -311,104 +277,210 @@
                     if (courier !== 'Desconocido') {
                         couriersCount[courier] = (couriersCount[courier] || 0) + 1;
                     }
-
-                    const mName = merchantNames[o.MerchantID] || o.MerchantID;
-                    if(mName) {
-                        merchantVentas[mName] = (merchantVentas[mName] || 0) + 1;
-                    }
                   });
 
-                  const totalOrdenes = todasOrdenes.length;
-                  const tasaCumplimiento = totalOrdenes > 0 ? (enviadas / totalOrdenes) * 100 : 0;
-
-                  const topCouriers = Object.entries(couriersCount)
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 3);
-
-                  const topMerchants = Object.entries(merchantVentas)
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 5);
-
-                  const sortedMonths = Object.entries(ordersByMonth)
-                    .sort((a, b) => a[0].localeCompare(b[0])); 
+                  // 4. CÁLCULO DE MÉTRICAS NUEVAS (% Shalom y Top Pro)
+                  const shalomCount = Object.keys(couriersCount).reduce((acc, curr) => {
+                      if(curr.toLowerCase().includes('shalom')) return acc + couriersCount[curr];
+                      return acc;
+                  }, 0);
+                  const pctShalom = totalOrdenes > 0 ? (shalomCount / totalOrdenes) * 100 : 0;
                   
-                  const sortedDatesDesc = Object.entries(ordersByDate)
-                    .sort((a, b) => b[0].localeCompare(a[0]))
-                    .slice(0, 7)
-                    .reverse(); 
+                  const proMerchantsArray = [];
+                  Object.keys(merchantOrdersCount).forEach(mId => {
+                      const u = usersMap[mId];
+                      if (u && u.plan.toLowerCase().includes('pro')) {
+                          proMerchantsArray.push({
+                              id: mId,
+                              name: u.name || merchantNames[mId] || mId,
+                              phone: u.phone,
+                              count: merchantOrdersCount[mId]
+                          });
+                      }
+                  });
+                  const topProMerchants = proMerchantsArray.sort((a,b) => b.count - a.count).slice(0, 5);
 
+
+                  // 5. CÁLCULO DE GRÁFICOS (USERS ACUMULADOS Y PEDIDOS MENSUALES POR PLAN)
+                  const allMonthsSet = new Set();
+                  usersData.forEach(u => {
+                      const d = parseSafeDate(u.CreatedAt || u.createdat || u.Fecha);
+                      if (d) allMonthsSet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+                  });
+                  todasOrdenes.forEach(o => {
+                      const d = parseSafeDate(o.Date || o.date || o.Fecha || o.CreatedAt);
+                      if (d) allMonthsSet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+                  });
+                  
+                  const allMonths = Array.from(allMonthsSet).sort();
+                  
+                  // NUEVO: Filtramos el eje X para que solo aparezcan los meses donde hubo pedidos globales
+                  const orderMonthsSet = new Set();
+                  todasOrdenes.forEach(o => {
+                      const d = parseSafeDate(o.Date || o.date || o.Fecha || o.CreatedAt);
+                      if (d) orderMonthsSet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+                  });
+                  const orderMonths = Array.from(orderMonthsSet).sort();
+
+                  // Generar Data para el Chart de los Top 5 Comercios
+                  const chartColors = ['#3b82f6', '#10b981', '#f59e0b', '#6366f1', '#ec4899']; // Blue, Emerald, Amber, Indigo, Pink
+                  const top5MonthlyData = topProMerchants.map((merchant, index) => {
+                      let acc = 0;
+                      const createdMonth = usersMap[merchant.id]?.createdAtMonth;
+                      
+                      // Acumulamos secuencialmente por TODOS los meses para no perder la suma real matemática
+                      const allDataByMonth = {};
+                      allMonths.forEach(m => {
+                          acc += (merchantMonthlyOrders[merchant.id] && merchantMonthlyOrders[merchant.id][m]) || 0;
+                          allDataByMonth[m] = acc;
+                      });
+
+                      // Filtramos la data final mapeando solo los meses con pedidos (orderMonths)
+                      const data = orderMonths.map(m => {
+                          // Si el mes analizado es anterior a la fecha de creación del comercio, devolvemos null (no dibuja línea)
+                          if (createdMonth && m < createdMonth) {
+                              return null; 
+                          }
+                          return allDataByMonth[m];
+                      });
+                      
+                      return {
+                          label: merchant.name,
+                          data: data,
+                          borderColor: chartColors[index % chartColors.length],
+                          backgroundColor: chartColors[index % chartColors.length],
+                          tension: 0.3,
+                          borderWidth: 2,
+                          pointRadius: 2,
+                          fill: false,
+                          spanGaps: true // Conecta los puntos visualmente si hay meses intermedios con 0 pedidos
+                      };
+                  });
+
+                  const usersTimeline = {};
+                  const ordersTimeline = {};
+                  allMonths.forEach(m => {
+                      usersTimeline[m] = { pagados: 0, prueba: 0, gratisUsado: 0, gratisNuevo: 0 };
+                      ordersTimeline[m] = { pagados: 0, prueba: 0, gratisUsado: 0, gratisNuevo: 0 };
+                  });
+
+                  usersData.forEach(u => {
+                      const d = parseSafeDate(u.CreatedAt || u.createdat || u.Fecha);
+                      if (d) {
+                          const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                          const id = u.UID || u.MerchantID || u.id;
+                          if (proPagadosIDs.has(id)) usersTimeline[m].pagados++;
+                          else if (proPruebaIDs.has(id)) usersTimeline[m].prueba++;
+                          else if (gratisUsadoIDs.has(id)) usersTimeline[m].gratisUsado++;
+                          else if (gratisNuevoIDs.has(id)) usersTimeline[m].gratisNuevo++;
+                      }
+                  });
+
+                  todasOrdenes.forEach(o => {
+                      const d = parseSafeDate(o.Date || o.date || o.Fecha || o.CreatedAt);
+                      if (d) {
+                          const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                          const id = o.MerchantID || o.UID;
+                          if (proPagadosIDs.has(id)) ordersTimeline[m].pagados++;
+                          else if (proPruebaIDs.has(id)) ordersTimeline[m].prueba++;
+                          else if (gratisUsadoIDs.has(id)) ordersTimeline[m].gratisUsado++;
+                          else if (gratisNuevoIDs.has(id)) ordersTimeline[m].gratisNuevo++;
+                      }
+                  });
+
+                  let accPagados = 0, accPrueba = 0, accGratisUsado = 0, accGratisNuevo = 0;
+                  const allCumUsersData = { pagados: {}, prueba: {}, gratisUsado: {}, gratisNuevo: {} };
+                  const allOrderTrendData = { pagados: {}, prueba: {}, gratisUsado: {}, gratisNuevo: {} };
+
+                  // Acumulamos en todos los meses para no romper la matemática base
+                  allMonths.forEach(m => {
+                      accPagados += usersTimeline[m].pagados;
+                      accPrueba += usersTimeline[m].prueba;
+                      accGratisUsado += usersTimeline[m].gratisUsado;
+                      accGratisNuevo += usersTimeline[m].gratisNuevo;
+                      
+                      allCumUsersData.pagados[m] = accPagados;
+                      allCumUsersData.prueba[m] = accPrueba;
+                      allCumUsersData.gratisUsado[m] = accGratisUsado;
+                      allCumUsersData.gratisNuevo[m] = accGratisNuevo;
+                      
+                      allOrderTrendData.pagados[m] = ordersTimeline[m].pagados;
+                      allOrderTrendData.prueba[m] = ordersTimeline[m].prueba;
+                      allOrderTrendData.gratisUsado[m] = ordersTimeline[m].gratisUsado;
+                      allOrderTrendData.gratisNuevo[m] = ordersTimeline[m].gratisNuevo;
+                  });
+
+                  // Extraemos solo los meses válidos (orderMonths) para las gráficas
+                  const cumUsersData = {
+                      pagados: orderMonths.map(m => allCumUsersData.pagados[m]),
+                      prueba: orderMonths.map(m => allCumUsersData.prueba[m]),
+                      gratisUsado: orderMonths.map(m => allCumUsersData.gratisUsado[m]),
+                      gratisNuevo: orderMonths.map(m => allCumUsersData.gratisNuevo[m])
+                  };
+
+                  const orderTrendData = {
+                      pagados: orderMonths.map(m => allOrderTrendData.pagados[m]),
+                      prueba: orderMonths.map(m => allOrderTrendData.prueba[m]),
+                      gratisUsado: orderMonths.map(m => allOrderTrendData.gratisUsado[m]),
+                      gratisNuevo: orderMonths.map(m => allOrderTrendData.gratisNuevo[m])
+                  };
+
+                  const tasaCumplimiento = totalOrdenes > 0 ? (enviadas / totalOrdenes) * 100 : 0;
+                  const topCouriers = Object.entries(couriersCount).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+                  const sortedMonths = Object.entries(ordersByMonth).sort((a, b) => a[0].localeCompare(b[0])); 
+                  const sortedDatesDesc = Object.entries(ordersByDate).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 7).reverse(); 
                   const daysMap = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
                   const formattedDaysOfWeek = daysMap.map((name, idx) => ({ name, count: ordersByDayOfWeek[idx] }));
+                  const sortedHoursDesc = ordersByHour.map((count, hour) => ({ hour: `${String(hour).padStart(2, '0')}:00`, count })).filter(h => h.count > 0).sort((a, b) => b.count - a.count); 
 
-                  const sortedHoursDesc = ordersByHour
-                    .map((count, hour) => ({ hour: `${String(hour).padStart(2, '0')}:00`, count }))
-                    .filter(h => h.count > 0)
-                    .sort((a, b) => b.count - a.count); 
+                  // 6. CLASIFICACIÓN DE LEADS (Lead Scoring y Temperatura)
+                  const classifyLead = (u) => {
+                     if (u.configurado && u.ordenes > 0) return { label: '🔥 Caliente', color: 'text-red-600 bg-red-100 border-red-200', score: 3 };
+                     if (u.configurado || u.ordenes > 0) return { label: '⚡ Tibio', color: 'text-amber-600 bg-amber-100 border-amber-200', score: 2 };
+                     return { label: '❄️ Frío', color: 'text-blue-600 bg-blue-100 border-blue-200', score: 1 };
+                  };
 
                   const targetLeads = Object.values(usersMap).filter(u => u.plan === 'Gratis');
-                  const leadsUsados = targetLeads.filter(u => u.hasUsedTrial).sort((a, b) => b.ordenes - a.ordenes);
-                  const leadsNuevos = targetLeads.filter(u => !u.hasUsedTrial).sort((a, b) => b.ordenes - a.ordenes);
+                  const mappedLeads = targetLeads.map(u => ({ ...u, tempClass: classifyLead(u) }));
+                  
+                  // Ordenamos primero por Score (Caliente -> Frío), luego por cantidad de órdenes
+                  const leadsUsados = mappedLeads.filter(u => u.hasUsedTrial).sort((a, b) => b.tempClass.score - a.tempClass.score || b.ordenes - a.ordenes);
+                  const leadsNuevos = mappedLeads.filter(u => !u.hasUsedTrial).sort((a, b) => b.tempClass.score - a.tempClass.score || b.ordenes - a.ordenes);
 
                   const insights = [];
                   
-                  if (totalGratisNuevo > 0) {
-                    insights.push({
-                      type: 'info',
-                      title: 'Oportunidad de Trial',
-                      text: `Hay ${totalGratisNuevo} usuarios en plan 'Gratis' que AÚN NO usan su prueba. Inicia una campaña automatizada para ofrecerles sus 14 días gratis y engancharlos.`
-                    });
+                  if (gratisNuevoIDs.size > 0) {
+                    insights.push({ type: 'info', title: 'Oportunidad de Trial', text: `Hay ${gratisNuevoIDs.size} usuarios en plan 'Gratis' que AÚN NO usan su prueba. Inicia una campaña automatizada para engancharlos.` });
                   }
-
-                  if (totalGratisUsado > 0) {
-                     insights.push({
-                      type: 'warning',
-                      title: 'Recuperación de Usuarios',
-                      text: `Hay ${totalGratisUsado} usuarios que usaron su prueba pero no pagaron (Downgrade). Puedes ofrecerles un descuento especial del 20% en su primer mes para recuperarlos.`
-                    });
+                  if (gratisUsadoIDs.size > 0) {
+                     insights.push({ type: 'warning', title: 'Recuperación de Usuarios', text: `Hay ${gratisUsadoIDs.size} usuarios que usaron su prueba pero no pagaron (Downgrade). Ofrece un descuento especial para recuperarlos.` });
                   }
-
                   const tasaPendientes = totalOrdenes > 0 ? (pendientes / totalOrdenes) * 100 : 0;
                   if (tasaPendientes > 20) {
-                    insights.push({
-                      type: 'warning',
-                      title: 'Cuello de Botella Operativo',
-                      text: `El ${tasaPendientes.toFixed(1)}% de las órdenes están 'PENDIENTES'. Revisa si es por falta de stock o si los usuarios olvidan actualizar el estado manualmente.`
-                    });
+                    insights.push({ type: 'warning', title: 'Cuello de Botella', text: `El ${tasaPendientes.toFixed(1)}% de las órdenes están 'PENDIENTES'. Revisa si es por falta de stock o actualización de estados.` });
                   }
-
                   if (topCouriers.length > 0) {
-                    insights.push({
-                      type: 'strategy',
-                      title: `Dominancia de ${topCouriers[0][0]}`,
-                      text: `Al ser el courier dominante, considera desarrollar una integración API directa con ellos para generar guías automáticamente. Será un gran gancho de ventas.`
-                    });
+                    insights.push({ type: 'strategy', title: `Dominancia de ${topCouriers[0][0]}`, text: `Al ser el courier dominante, considera desarrollar una integración API directa con ellos para generar guías automáticamente.` });
                   }
-
-                  const proPagadosPercentage = totalOrdenes > 0 ? (proPagadosOrdersCount / totalOrdenes) * 100 : 0;
-                  const proPruebaPercentage = totalOrdenes > 0 ? (proPruebaOrdersCount / totalOrdenes) * 100 : 0;
-                  const gratisUsadoPercentage = totalOrdenes > 0 ? (gratisUsadoOrdersCount / totalOrdenes) * 100 : 0;
-                  const gratisNuevoPercentage = totalOrdenes > 0 ? (gratisNuevoOrdersCount / totalOrdenes) * 100 : 0;
-
                   if (sortedHoursDesc.length > 0) {
-                    const topHour = sortedHoursDesc[0];
-                    insights.push({
-                      type: 'success',
-                      title: `Hora Pico: ${topHour.hour} ⏰`,
-                      text: `El mayor volumen de registros ocurre alrededor de las ${topHour.hour} (${topHour.count} operaciones). Es el momento ideal para lanzar comunicados importantes dentro del dashboard.`
-                    });
+                    insights.push({ type: 'success', title: `Hora Pico: ${sortedHoursDesc[0].hour} ⏰`, text: `El mayor volumen de actividad ocurre a las ${sortedHoursDesc[0].hour}. Es el momento ideal para lanzar comunicados importantes.` });
                   }
 
                   setKpis({
                     usuarios: { total: totalUsuarios, planes, activos: configUnicos, tasaAdopcion },
-                    operaciones: { total: totalOrdenes, pendientes, enviadas, tasaCumplimiento },
+                    operaciones: { total: totalOrdenes, pctShalom, enviadas, tasaCumplimiento },
                     topCouriers,
-                    topMerchants,
+                    topProMerchants,
                     insights,
-                    planStats: { 
-                      pagados: { total: totalProPagados, configurados: proPagadosConfigurados, adopcion: adopcionProPagados, ordenes: proPagadosOrdersCount, porcentajeOrdenes: proPagadosPercentage },
-                      prueba: { total: totalProPrueba, configurados: proPruebaConfigurados, adopcion: adopcionProPrueba, ordenes: proPruebaOrdersCount, porcentajeOrdenes: proPruebaPercentage },
-                      gratisUsado: { total: totalGratisUsado, configurados: gratisUsadoConfigurados, adopcion: adopcionGratisUsado, ordenes: gratisUsadoOrdersCount, porcentajeOrdenes: gratisUsadoPercentage },
-                      gratisNuevo: { total: totalGratisNuevo, configurados: gratisNuevoConfigurados, adopcion: adopcionGratisNuevo, ordenes: gratisNuevoOrdersCount, porcentajeOrdenes: gratisNuevoPercentage }
+                    topProMerchantsChart: {
+                        labels: allMonths,
+                        datasets: top5MonthlyData
+                    },
+                    planTrends: { 
+                      labels: allMonths,
+                      users: cumUsersData,
+                      orders: orderTrendData
                     },
                     temporalStats: {
                       months: sortedMonths,
@@ -552,7 +624,7 @@
                       <StatCard 
                         title="Órdenes Históricas" 
                         value={kpis.operaciones.total} 
-                        subtitle={`${kpis.operaciones.pendientes} pendientes actualmente`}
+                        subtitle={`${kpis.operaciones.pctShalom.toFixed(1)}% de pedidos por Shalom`}
                         icon={Package} 
                         colorClass="bg-green-100 text-green-600"
                       />
@@ -565,116 +637,111 @@
                       />
                     </div>
 
-                    {/* Sección Especial: Usabilidad por Plan */}
-                    {kpis.planStats && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mt-2 mb-2">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                        {/* Gráfico 1: Crecimiento de Usuarios Acumulado por Plan */}
+                        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                            <div className="flex items-center gap-2 mb-4 border-b pb-3">
+                                <Users className="w-5 h-5 text-indigo-500" />
+                                <h3 className="font-bold text-gray-800 text-lg">Crecimiento Acumulado de Usuarios por Plan</h3>
+                            </div>
+                            <div className="relative h-[350px] w-full mt-4">
+                                <ChartComponent 
+                                    type="line" 
+                                    data={{
+                                        labels: kpis.planTrends.labels,
+                                        datasets: [
+                                            { label: 'Pro (Pagados)', data: kpis.planTrends.users.pagados, borderColor: '#2563eb', backgroundColor: 'rgba(37, 99, 235, 0.1)', fill: true, tension: 0.3, borderWidth: 2 },
+                                            { label: 'Pro (Prueba)', data: kpis.planTrends.users.prueba, borderColor: '#4f46e5', backgroundColor: 'rgba(79, 70, 229, 0.1)', fill: true, tension: 0.3, borderWidth: 2 },
+                                            { label: 'Gratis (Trial Usado)', data: kpis.planTrends.users.gratisUsado, borderColor: '#4b5563', backgroundColor: 'rgba(75, 85, 99, 0.1)', fill: true, tension: 0.3, borderWidth: 2 },
+                                            { label: 'Gratis (Sin Trial)', data: kpis.planTrends.users.gratisNuevo, borderColor: '#059669', backgroundColor: 'rgba(5, 150, 105, 0.1)', fill: true, tension: 0.3, borderWidth: 2 }
+                                        ]
+                                    }} 
+                                    options={{ 
+                                        responsive: true, 
+                                        maintainAspectRatio: false, 
+                                        plugins: { legend: { position: 'top' } }, 
+                                        scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } 
+                                    }} 
+                                />
+                            </div>
+                        </div>
+
+                        {/* Gráfico 2: Evolución de pedidos mensuales por plan */}
+                        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+                            <div className="flex items-center gap-2 mb-4 border-b pb-3">
+                                <Package className="w-5 h-5 text-indigo-500" />
+                                <h3 className="font-bold text-gray-800 text-lg">Evolución de Pedidos Mensuales por Plan</h3>
+                            </div>
+                            <div className="relative h-[350px] w-full mt-4">
+                                <ChartComponent 
+                                    type="line" 
+                                    data={{
+                                        labels: kpis.planTrends.labels,
+                                        datasets: [
+                                            { label: 'Pedidos Pro (Pagados)', data: kpis.planTrends.orders.pagados, borderColor: '#2563eb', backgroundColor: '#2563eb', tension: 0.3, borderWidth: 2 },
+                                            { label: 'Pedidos Pro (Prueba)', data: kpis.planTrends.orders.prueba, borderColor: '#4f46e5', backgroundColor: '#4f46e5', tension: 0.3, borderWidth: 2 },
+                                            { label: 'Pedidos Gratis (Trial Usado)', data: kpis.planTrends.orders.gratisUsado, borderColor: '#4b5563', backgroundColor: '#4b5563', tension: 0.3, borderWidth: 2 },
+                                            { label: 'Pedidos Gratis (Sin Trial)', data: kpis.planTrends.orders.gratisNuevo, borderColor: '#059669', backgroundColor: '#059669', tension: 0.3, borderWidth: 2 }
+                                        ]
+                                    }} 
+                                    options={{ 
+                                        responsive: true, 
+                                        maintainAspectRatio: false, 
+                                        plugins: { legend: { position: 'top' } }, 
+                                        scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } 
+                                    }} 
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* SECCIÓN NUEVA Y FULL WIDTH: Top 5 Comercios PRO */}
+                    <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 mt-6 mb-6">
+                        <div className="flex items-center gap-2 mb-4 border-b pb-3">
+                            <Star className="w-6 h-6 text-amber-500" />
+                            <h3 className="font-bold text-gray-800 text-lg">Top 5 Comercios (Solo PRO) - Evolución de Pedidos</h3>
+                        </div>
                         
-                        {/* Tarjeta PRO Pagados */}
-                        <div className="bg-gradient-to-br from-blue-900 to-blue-800 rounded-xl shadow-md p-6 border border-blue-700 text-white flex flex-col justify-between">
-                          <div>
-                            <div className="flex items-center gap-2 mb-4 border-b border-blue-600 pb-3">
-                              <span className="text-2xl">💎</span>
-                              <h3 className="font-bold text-lg">Plan PRO</h3>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 mb-4">
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-blue-200 text-[10px] uppercase font-bold tracking-wider">Adopción</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.pagados.adopcion.toFixed(1)}%</p>
-                                 <p className="text-xs text-blue-300 mt-1">{kpis.planStats.pagados.configurados}/{kpis.planStats.pagados.total} users</p>
-                               </div>
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-blue-200 text-[10px] uppercase font-bold tracking-wider">Pedidos</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.pagados.ordenes}</p>
-                                 <p className="text-xs text-blue-300 mt-1">{kpis.planStats.pagados.porcentajeOrdenes.toFixed(1)}% del total</p>
-                               </div>
-                            </div>
-                          </div>
-                          <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10 flex justify-between items-center">
-                             <span className="text-blue-200 text-xs font-medium" title="Basado solo en usuarios que configuraron su tienda">Promedio/user activo:</span>
-                             <span className="text-lg font-bold">{kpis.planStats.pagados.configurados > 0 ? Math.round(kpis.planStats.pagados.ordenes / kpis.planStats.pagados.configurados) : 0}</span>
-                          </div>
+                        <div className="relative h-[300px] w-full mt-4">
+                            <ChartComponent 
+                                type="line" 
+                                data={kpis.topProMerchantsChart} 
+                                options={{ 
+                                    responsive: true, 
+                                    maintainAspectRatio: false, 
+                                    plugins: { legend: { display: false } }, 
+                                    scales: { 
+                                        x: { display: true, grid: { display: false } }, 
+                                        y: { beginAtZero: true } 
+                                    } 
+                                }} 
+                            />
                         </div>
-
-                        {/* Tarjeta PRO Prueba */}
-                        <div className="bg-gradient-to-br from-indigo-800 to-purple-800 rounded-xl shadow-md p-6 border border-indigo-700 text-white flex flex-col justify-between">
-                          <div>
-                            <div className="flex items-center gap-2 mb-4 border-b border-indigo-600 pb-3">
-                              <span className="text-2xl">⏳</span>
-                              <h3 className="font-bold text-lg">PRO (Prueba)</h3>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 mb-4">
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-indigo-200 text-[10px] uppercase font-bold tracking-wider">Adopción</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.prueba.adopcion.toFixed(1)}%</p>
-                                 <p className="text-xs text-indigo-300 mt-1">{kpis.planStats.prueba.configurados}/{kpis.planStats.prueba.total} users</p>
-                               </div>
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-indigo-200 text-[10px] uppercase font-bold tracking-wider">Pedidos</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.prueba.ordenes}</p>
-                                 <p className="text-xs text-indigo-300 mt-1">{kpis.planStats.prueba.porcentajeOrdenes.toFixed(1)}% del total</p>
-                               </div>
-                            </div>
-                          </div>
-                          <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10 flex justify-between items-center">
-                             <span className="text-indigo-200 text-xs font-medium" title="Basado solo en usuarios que configuraron su tienda">Promedio/user activo:</span>
-                             <span className="text-lg font-bold">{kpis.planStats.prueba.configurados > 0 ? Math.round(kpis.planStats.prueba.ordenes / kpis.planStats.prueba.configurados) : 0}</span>
-                          </div>
+                        
+                        {/* Directorio Horizontal del Top 5 */}
+                        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                            {kpis.topProMerchants.map((merchant, i) => {
+                                const bgColors = ['bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-indigo-500', 'bg-pink-500'];
+                                return (
+                                <div key={i} className="flex flex-col p-4 rounded-xl border border-gray-100 bg-gray-50/50 hover:bg-gray-50 hover:border-gray-200 transition-colors shadow-sm">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <span className={`w-3 h-3 rounded-full shrink-0 ${bgColors[i % bgColors.length]}`}></span>
+                                        <div className="truncate font-bold text-gray-700 text-sm" title={merchant.name}>
+                                            {merchant.name}
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-between items-center mt-auto">
+                                        <span className="text-gray-500 flex items-center gap-1.5 text-xs font-medium bg-white px-2 py-1 rounded border border-gray-100">
+                                            <MessageCircle className="w-3.5 h-3.5 text-gray-400"/> {merchant.phone || 'N/A'}
+                                        </span>
+                                        <span className="font-bold text-blue-600 text-sm bg-blue-50 px-2 py-1 rounded-md">{merchant.count} <span className="font-normal text-xs text-blue-400">ped.</span></span>
+                                    </div>
+                                </div>
+                                )
+                            })}
+                            {kpis.topProMerchants.length === 0 && <p className="text-sm text-gray-400 col-span-full text-center">Sin registros PRO</p>}
                         </div>
-
-                        {/* Tarjeta GRATIS (Usó Trial) */}
-                        <div className="bg-gradient-to-br from-stone-700 to-gray-900 rounded-xl shadow-md p-6 border border-gray-600 text-white flex flex-col justify-between">
-                          <div>
-                            <div className="flex items-center gap-2 mb-4 border-b border-gray-600 pb-3">
-                              <span className="text-2xl">📉</span>
-                              <h3 className="font-bold text-lg" title="Usuarios que probaron y regresaron al plan Gratis">GRATIS (Trial Usado)</h3>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 mb-4">
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-gray-300 text-[10px] uppercase font-bold tracking-wider">Adopción</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.gratisUsado.adopcion.toFixed(1)}%</p>
-                                 <p className="text-xs text-gray-400 mt-1">{kpis.planStats.gratisUsado.configurados}/{kpis.planStats.gratisUsado.total} users</p>
-                               </div>
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-gray-300 text-[10px] uppercase font-bold tracking-wider">Pedidos</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.gratisUsado.ordenes}</p>
-                                 <p className="text-xs text-gray-400 mt-1">{kpis.planStats.gratisUsado.porcentajeOrdenes.toFixed(1)}% del total</p>
-                               </div>
-                            </div>
-                          </div>
-                          <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10 flex justify-between items-center">
-                             <span className="text-gray-300 text-xs font-medium" title="Basado solo en usuarios que configuraron su tienda">Promedio/user activo:</span>
-                             <span className="text-lg font-bold">{kpis.planStats.gratisUsado.configurados > 0 ? Math.round(kpis.planStats.gratisUsado.ordenes / kpis.planStats.gratisUsado.configurados) : 0}</span>
-                          </div>
-                        </div>
-
-                        {/* Tarjeta GRATIS (Nuevo / Sin Trial) */}
-                        <div className="bg-gradient-to-br from-emerald-800 to-teal-900 rounded-xl shadow-md p-6 border border-emerald-700 text-white flex flex-col justify-between">
-                          <div>
-                            <div className="flex items-center gap-2 mb-4 border-b border-emerald-600 pb-3">
-                              <span className="text-2xl">🌱</span>
-                              <h3 className="font-bold text-lg" title="Nuevos usuarios que aún no activan su prueba gratis">GRATIS (Sin Trial)</h3>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 mb-4">
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-emerald-200 text-[10px] uppercase font-bold tracking-wider">Adopción</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.gratisNuevo.adopcion.toFixed(1)}%</p>
-                                 <p className="text-xs text-emerald-300 mt-1">{kpis.planStats.gratisNuevo.configurados}/{kpis.planStats.gratisNuevo.total} users</p>
-                               </div>
-                               <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10">
-                                 <p className="text-emerald-200 text-[10px] uppercase font-bold tracking-wider">Pedidos</p>
-                                 <p className="text-xl font-bold mt-1">{kpis.planStats.gratisNuevo.ordenes}</p>
-                                 <p className="text-xs text-emerald-300 mt-1">{kpis.planStats.gratisNuevo.porcentajeOrdenes.toFixed(1)}% del total</p>
-                               </div>
-                            </div>
-                          </div>
-                          <div className="bg-white/10 p-3 rounded-lg backdrop-blur-sm border border-white/10 flex justify-between items-center">
-                             <span className="text-emerald-200 text-xs font-medium" title="Basado solo en usuarios que configuraron su tienda">Promedio/user activo:</span>
-                             <span className="text-lg font-bold">{kpis.planStats.gratisNuevo.configurados > 0 ? Math.round(kpis.planStats.gratisNuevo.ordenes / kpis.planStats.gratisNuevo.configurados) : 0}</span>
-                          </div>
-                        </div>
-
-                      </div>
-                    )}
+                    </div>
 
                     {/* Análisis Temporal (Mes y Día) */}
                     {kpis.temporalStats && (
@@ -780,17 +847,24 @@
                       </div>
                     )}
 
-                    {/* Directorio de Leads */}
+                    {/* Directorio de Leads Mejorado con Lead Scoring */}
                     {kpis.leads && (kpis.leads.nuevos.length > 0 || kpis.leads.usados.length > 0) && (
                       <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100 mt-2 mb-4">
-                         <div className="flex items-center gap-2 mb-6 border-b pb-3">
-                            <MessageCircle className="w-6 h-6 text-green-500" />
-                            <h2 className="text-xl font-bold text-gray-800">Directorio de Oportunidades (WhatsApp)</h2>
+                         <div className="flex items-center justify-between mb-6 border-b pb-3">
+                            <div className="flex items-center gap-2">
+                                <Flame className="w-6 h-6 text-red-500" />
+                                <h2 className="text-xl font-bold text-gray-800">Directorio de Oportunidades (Lead Scoring)</h2>
+                            </div>
+                            <div className="flex gap-4 text-xs font-semibold">
+                                <span className="flex items-center gap-1 text-red-600"><span className="w-2 h-2 rounded-full bg-red-500"></span> Caliente (Config + Pedidos)</span>
+                                <span className="flex items-center gap-1 text-amber-600"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Tibio (Solo Config o Solo Pedidos)</span>
+                                <span className="flex items-center gap-1 text-blue-600"><span className="w-2 h-2 rounded-full bg-blue-500"></span> Frío (Sin actividad)</span>
+                            </div>
                          </div>
                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                             
                             {/* Tabla Gratis Nuevos */}
-                            <div className="border border-emerald-200 rounded-xl overflow-hidden flex flex-col h-[400px]">
+                            <div className="border border-emerald-200 rounded-xl overflow-hidden flex flex-col h-[450px]">
                                <div className="bg-emerald-50 text-emerald-800 font-bold p-4 border-b border-emerald-200 flex justify-between items-center shrink-0">
                                  <div className="flex items-center gap-2">
                                    <span className="text-xl">🌱</span> 
@@ -802,6 +876,7 @@
                                  <table className="w-full text-left text-sm">
                                    <thead className="bg-emerald-50/50 sticky top-0 shadow-sm backdrop-blur-sm z-10">
                                      <tr>
+                                       <th className="p-3 font-semibold text-gray-600 border-b border-emerald-100">Temperatura</th>
                                        <th className="p-3 font-semibold text-gray-600 border-b border-emerald-100">Teléfono</th>
                                        <th className="p-3 font-semibold text-gray-600 border-b border-emerald-100 text-center">Configuró</th>
                                        <th className="p-3 font-semibold text-gray-600 border-b border-emerald-100 text-center">Pedidos</th>
@@ -811,6 +886,11 @@
                                    <tbody className="divide-y divide-emerald-50">
                                      {kpis.leads.nuevos.map(u => (
                                         <tr key={u.id} className="hover:bg-emerald-50/50 transition-colors">
+                                           <td className="p-3 font-medium">
+                                               <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${u.tempClass.color}`}>
+                                                   {u.tempClass.label}
+                                               </span>
+                                           </td>
                                            <td className="p-3 font-medium text-gray-800">{u.phone || 'Sin número'}</td>
                                            <td className="p-3 text-center">{u.configurado ? '✅' : '❌'}</td>
                                            <td className="p-3 text-center font-semibold text-gray-600">{u.ordenes}</td>
@@ -824,7 +904,7 @@
                                         </tr>
                                      ))}
                                      {kpis.leads.nuevos.length === 0 && (
-                                       <tr><td colSpan="4" className="p-8 text-center text-gray-400">No hay prospectos en esta categoría</td></tr>
+                                       <tr><td colSpan="5" className="p-8 text-center text-gray-400">No hay prospectos en esta categoría</td></tr>
                                      )}
                                    </tbody>
                                  </table>
@@ -832,7 +912,7 @@
                             </div>
 
                             {/* Tabla Gratis Usados */}
-                            <div className="border border-gray-200 rounded-xl overflow-hidden flex flex-col h-[400px]">
+                            <div className="border border-gray-200 rounded-xl overflow-hidden flex flex-col h-[450px]">
                                <div className="bg-gray-100 text-gray-800 font-bold p-4 border-b border-gray-200 flex justify-between items-center shrink-0">
                                  <div className="flex items-center gap-2">
                                    <span className="text-xl">📉</span> 
@@ -844,6 +924,7 @@
                                  <table className="w-full text-left text-sm">
                                    <thead className="bg-gray-50 sticky top-0 shadow-sm backdrop-blur-sm z-10">
                                      <tr>
+                                       <th className="p-3 font-semibold text-gray-600 border-b border-gray-200">Temperatura</th>
                                        <th className="p-3 font-semibold text-gray-600 border-b border-gray-200">Teléfono</th>
                                        <th className="p-3 font-semibold text-gray-600 border-b border-gray-200 text-center">Configuró</th>
                                        <th className="p-3 font-semibold text-gray-600 border-b border-gray-200 text-center">Pedidos</th>
@@ -853,6 +934,11 @@
                                    <tbody className="divide-y divide-gray-100">
                                      {kpis.leads.usados.map(u => (
                                         <tr key={u.id} className="hover:bg-gray-50 transition-colors">
+                                           <td className="p-3 font-medium">
+                                               <span className={`text-[10px] font-bold px-2 py-1 rounded-full border ${u.tempClass.color}`}>
+                                                   {u.tempClass.label}
+                                               </span>
+                                           </td>
                                            <td className="p-3 font-medium text-gray-800">{u.phone || 'Sin número'}</td>
                                            <td className="p-3 text-center">{u.configurado ? '✅' : '❌'}</td>
                                            <td className="p-3 text-center font-semibold text-gray-600">{u.ordenes}</td>
@@ -866,7 +952,7 @@
                                         </tr>
                                      ))}
                                      {kpis.leads.usados.length === 0 && (
-                                       <tr><td colSpan="4" className="p-8 text-center text-gray-400">No hay prospectos en esta categoría</td></tr>
+                                       <tr><td colSpan="5" className="p-8 text-center text-gray-400">No hay prospectos en esta categoría</td></tr>
                                      )}
                                    </tbody>
                                  </table>
@@ -878,7 +964,7 @@
                     )}
 
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                      {/* Top Merchants y Couriers */}
+                      {/* Top Couriers y Suscripciones */}
                       <div className="lg:col-span-1 space-y-6">
                         
                         <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
@@ -891,21 +977,6 @@
                               <div key={i} className="flex justify-between items-center">
                                 <span className="text-gray-700 font-medium">{courier}</span>
                                 <span className="font-semibold bg-indigo-50 text-indigo-700 px-3 py-1 rounded-full text-xs">{count} envíos</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-                          <div className="flex items-center gap-2 mb-4 border-b pb-3">
-                            <Users className="w-5 h-5 text-blue-500" />
-                            <h3 className="font-bold text-gray-800">Top 5 Comercios</h3>
-                          </div>
-                          <div className="space-y-3">
-                            {kpis.topMerchants.map(([merchant, count], i) => (
-                              <div key={i} className="flex justify-between items-center group">
-                                <span className="text-gray-700 truncate w-2/3 group-hover:text-blue-600 transition-colors" title={merchant}>{merchant}</span>
-                                <span className="font-semibold bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs">{count} ped.</span>
                               </div>
                             ))}
                           </div>

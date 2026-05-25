@@ -604,6 +604,10 @@
                       const userOrdersByMonthAndCourier = {};
                       const userCouriers = new Set();
                       const userMonths = new Set();
+                      
+                      // 3. GENERAR DATA PARA EL GRÁFICO DIARIO (Última semana activa)
+                      const dailyCounts = {};
+                      let maxDateObj = new Date(0);
 
                       o.forEach(ord => {
                           const rawDate = ord.Date || ord.date || ord.CreatedAt;
@@ -611,6 +615,13 @@
                           if (d) {
                               const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
                               userMonths.add(monthKey);
+                              
+                              const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                              dailyCounts[dayKey] = (dailyCounts[dayKey] || 0) + 1;
+                              
+                              if (d > maxDateObj) {
+                                  maxDateObj = d;
+                              }
                               
                               const jsonData = safeJSONParse(ord.DataJSON);
                               const courier = jsonData.courier || 'Desconocido';
@@ -643,12 +654,41 @@
                               spanGaps: true
                           };
                       });
+                      
+                      // Construir los últimos 7 días continuos terminando en el día más reciente
+                      const last7DaysLabels = [];
+                      const last7DaysData = [];
+
+                      if (maxDateObj.getTime() > 0) {
+                          for (let i = 6; i >= 0; i--) {
+                              const d = new Date(maxDateObj);
+                              d.setDate(d.getDate() - i);
+                              const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                              last7DaysLabels.push(dayKey);
+                              last7DaysData.push(dailyCounts[dayKey] || 0);
+                          }
+                      }
+                      
+                      const dailyChartData = {
+                          labels: last7DaysLabels,
+                          datasets: [{
+                              label: 'Pedidos',
+                              data: last7DaysData,
+                              borderColor: '#f59e0b', 
+                              backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                              borderWidth: 2,
+                              tension: 0.3,
+                              fill: true,
+                              pointRadius: 3,
+                          }]
+                      };
 
                       setSearchedData({ 
                         user: u, 
                         config: c, 
                         orders: o, 
-                        chartData: { labels: sortedUserMonths, datasets: userChartDatasets } 
+                        chartData: { labels: sortedUserMonths, datasets: userChartDatasets },
+                        dailyChartData: dailyChartData
                       });
                   } else {
                       setSearchedData('NOT_FOUND');
@@ -861,28 +901,58 @@
                                     </div>
                                 </div>
 
-                                {/* Gráfico CRM (Couriers x Mes) */}
-                                {searchedData.orders.length > 0 && searchedData.chartData && (
-                                    <div className="border border-gray-200 rounded-xl overflow-hidden mb-6 p-6 bg-white shadow-sm">
-                                        <div className="flex items-center gap-2 mb-4 border-b pb-2">
-                                            <BarChart2 className="w-5 h-5 text-indigo-500" />
-                                            <h4 className="font-bold text-gray-700 text-base">Evolución de Envíos por Courier</h4>
-                                        </div>
-                                        <div className="relative h-[250px] w-full">
-                                            <ChartComponent 
-                                                type="line" 
-                                                data={searchedData.chartData} 
-                                                options={{ 
-                                                    responsive: true, 
-                                                    maintainAspectRatio: false, 
-                                                    plugins: { legend: { position: 'top' } }, 
-                                                    scales: { 
-                                                        x: { grid: { display: false } }, 
-                                                        y: { beginAtZero: true } 
-                                                    } 
-                                                }} 
-                                            />
-                                        </div>
+                                {/* Gráficos CRM */}
+                                {(searchedData.chartData || searchedData.dailyChartData) && (
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                                        {/* Gráfico CRM (Couriers x Mes) */}
+                                        {searchedData.chartData && (
+                                            <div className="border border-gray-200 rounded-xl overflow-hidden p-6 bg-white shadow-sm">
+                                                <div className="flex items-center gap-2 mb-4 border-b pb-2">
+                                                    <BarChart2 className="w-5 h-5 text-indigo-500" />
+                                                    <h4 className="font-bold text-gray-700 text-base">Evolución de Envíos por Courier (Mensual)</h4>
+                                                </div>
+                                                <div className="relative h-[250px] w-full">
+                                                    <ChartComponent 
+                                                        type="line" 
+                                                        data={searchedData.chartData} 
+                                                        options={{ 
+                                                            responsive: true, 
+                                                            maintainAspectRatio: false, 
+                                                            plugins: { legend: { position: 'top' } }, 
+                                                            scales: { 
+                                                                x: { grid: { display: false } }, 
+                                                                y: { beginAtZero: true, ticks: { precision: 0 } } 
+                                                            } 
+                                                        }} 
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        {/* Gráfico CRM (Pedidos x Día) */}
+                                        {searchedData.dailyChartData && (
+                                            <div className="border border-gray-200 rounded-xl overflow-hidden p-6 bg-white shadow-sm">
+                                                <div className="flex items-center gap-2 mb-4 border-b pb-2">
+                                                    <Calendar className="w-5 h-5 text-amber-500" />
+                                                    <h4 className="font-bold text-gray-700 text-base">Pedidos: Última semana activa</h4>
+                                                </div>
+                                                <div className="relative h-[250px] w-full">
+                                                    <ChartComponent 
+                                                        type="line" 
+                                                        data={searchedData.dailyChartData} 
+                                                        options={{ 
+                                                            responsive: true, 
+                                                            maintainAspectRatio: false, 
+                                                            plugins: { legend: { display: false } }, 
+                                                            scales: { 
+                                                                x: { grid: { display: false } }, 
+                                                                y: { beginAtZero: true, ticks: { precision: 0 } } 
+                                                            } 
+                                                        }} 
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
 
